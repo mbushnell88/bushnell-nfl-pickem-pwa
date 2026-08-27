@@ -32,14 +32,34 @@
   >
 
   <style>
+    :root{
+      --bg:#071018;
+      --panel:#101b27;
+      --text:#f4f7fb;
+      --muted:#90a0b3;
+      --line:#203044;
+      --accent:#4f8cff;
+    }
+
+    *{
+      box-sizing:border-box;
+    }
+
     html,
     body{
       margin:0;
       width:100%;
       height:100%;
-      background:#071018;
+      background:var(--bg);
       overflow:hidden;
-      font-family:Arial,sans-serif;
+      font-family:
+        Inter,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Arial,
+        sans-serif;
     }
 
     iframe{
@@ -47,6 +67,209 @@
       height:100%;
       border:0;
       display:block;
+      background:var(--bg);
+    }
+
+    /* ---------------------------
+       INSTALL BANNER
+       --------------------------- */
+
+    #installBanner{
+      position:fixed;
+      left:50%;
+      bottom:18px;
+      transform:translateX(-50%);
+
+      z-index:99999;
+
+      width:min(560px,calc(100% - 28px));
+
+      display:none;
+      align-items:center;
+      gap:12px;
+
+      padding:12px 14px;
+
+      border:1px solid rgba(255,255,255,.12);
+      border-radius:18px;
+
+      background:rgba(8,18,28,.97);
+      color:var(--text);
+
+      box-shadow:
+        0 16px 45px rgba(0,0,0,.45);
+
+      backdrop-filter:blur(14px);
+    }
+
+    #installBanner.show{
+      display:flex;
+    }
+
+    .install-icon{
+      width:46px;
+      height:46px;
+      flex:0 0 46px;
+
+      border-radius:12px;
+      overflow:hidden;
+
+      background:#071018;
+    }
+
+    .install-icon img{
+      width:100%;
+      height:100%;
+      object-fit:cover;
+      display:block;
+    }
+
+    .install-copy{
+      flex:1;
+      min-width:0;
+    }
+
+    .install-copy b{
+      display:block;
+      margin-bottom:2px;
+
+      font-size:14px;
+      color:#fff;
+    }
+
+    .install-copy small{
+      display:block;
+
+      color:var(--muted);
+      font-size:11px;
+      line-height:1.35;
+    }
+
+    .install-actions{
+      display:flex;
+      align-items:center;
+      gap:7px;
+    }
+
+    .install-btn{
+      border:0;
+      border-radius:10px;
+
+      padding:10px 12px;
+
+      background:var(--accent);
+      color:#06101a;
+
+      font-size:12px;
+      font-weight:900;
+
+      cursor:pointer;
+    }
+
+    .install-close{
+      width:34px;
+      height:34px;
+
+      border:0;
+      border-radius:9px;
+
+      background:rgba(255,255,255,.07);
+      color:#fff;
+
+      cursor:pointer;
+
+      font-size:17px;
+    }
+
+    /* ---------------------------
+       IOS INSTRUCTIONS
+       --------------------------- */
+
+    #iosModal{
+      position:fixed;
+      inset:0;
+
+      z-index:100000;
+
+      display:none;
+      align-items:center;
+      justify-content:center;
+
+      padding:20px;
+
+      background:rgba(0,0,0,.72);
+      backdrop-filter:blur(5px);
+    }
+
+    #iosModal.show{
+      display:flex;
+    }
+
+    .ios-card{
+      width:min(420px,100%);
+
+      padding:22px;
+
+      border:1px solid rgba(255,255,255,.12);
+      border-radius:22px;
+
+      background:#101b27;
+      color:#fff;
+
+      box-shadow:
+        0 24px 70px rgba(0,0,0,.5);
+    }
+
+    .ios-card h2{
+      margin:0 0 8px;
+
+      font-size:22px;
+    }
+
+    .ios-card p{
+      margin:0 0 16px;
+
+      color:var(--muted);
+      line-height:1.5;
+      font-size:14px;
+    }
+
+    .ios-steps{
+      margin:0 0 18px;
+      padding-left:22px;
+
+      color:#fff;
+      line-height:1.7;
+      font-size:14px;
+    }
+
+    .ios-done{
+      width:100%;
+
+      border:0;
+      border-radius:12px;
+
+      padding:13px;
+
+      background:var(--accent);
+      color:#06101a;
+
+      font-weight:900;
+      cursor:pointer;
+    }
+
+    @media(max-width:600px){
+      #installBanner{
+        bottom:12px;
+      }
+
+      .install-copy small{
+        font-size:10px;
+      }
+
+      .install-btn{
+        padding:9px 10px;
+      }
     }
   </style>
 </head>
@@ -57,6 +280,386 @@
     src="https://script.google.com/macros/s/AKfycbydH8W1DjoQ4DW7Y7NHYvO5uxAJlXMLi87AXTb8ESWZ9EC8mbzXpy7g7vf-o4Hz7_FPpQ/exec"
     allow="fullscreen"
   ></iframe>
+
+
+  <!-- INSTALL BANNER -->
+  <div id="installBanner">
+
+    <div class="install-icon">
+      <img
+        src="icon-192.png"
+        alt="Bushnell Pick'em"
+      >
+    </div>
+
+    <div class="install-copy">
+      <b id="installTitle">
+        Install Bushnell Pick'em
+      </b>
+
+      <small id="installText">
+        Add the pool to your Home Screen for an app-like experience.
+      </small>
+    </div>
+
+    <div class="install-actions">
+
+      <button
+        id="installButton"
+        class="install-btn"
+      >
+        Install
+      </button>
+
+      <button
+        id="installClose"
+        class="install-close"
+        aria-label="Close"
+      >
+        ×
+      </button>
+
+    </div>
+
+  </div>
+
+
+  <!-- IOS INSTALL HELP -->
+  <div id="iosModal">
+
+    <div class="ios-card">
+
+      <h2>
+        Install Bushnell Pick'em
+      </h2>
+
+      <p>
+        On iPhone or iPad, install the pool from Safari:
+      </p>
+
+      <ol class="ios-steps">
+
+        <li>
+          Open this page in Safari.
+        </li>
+
+        <li>
+          Tap the Share button.
+        </li>
+
+        <li>
+          Choose Add to Home Screen.
+        </li>
+
+        <li>
+          Make sure Open as Web App is enabled if shown.
+        </li>
+
+        <li>
+          Tap Add.
+        </li>
+
+      </ol>
+
+      <button
+        id="iosDone"
+        class="ios-done"
+      >
+        Got It
+      </button>
+
+    </div>
+
+  </div>
+
+
+  <script>
+
+    let deferredInstallPrompt = null;
+
+    const installBanner =
+      document.getElementById(
+        'installBanner'
+      );
+
+    const installButton =
+      document.getElementById(
+        'installButton'
+      );
+
+    const installClose =
+      document.getElementById(
+        'installClose'
+      );
+
+    const installTitle =
+      document.getElementById(
+        'installTitle'
+      );
+
+    const installText =
+      document.getElementById(
+        'installText'
+      );
+
+    const iosModal =
+      document.getElementById(
+        'iosModal'
+      );
+
+    const iosDone =
+      document.getElementById(
+        'iosDone'
+      );
+
+
+    /* ----------------------------------
+       DEVICE / INSTALL STATE
+       ---------------------------------- */
+
+    function isIOS(){
+      return /iphone|ipad|ipod/i
+        .test(
+          navigator.userAgent
+        );
+    }
+
+
+    function isStandalone(){
+
+      return (
+        window.matchMedia(
+          '(display-mode: standalone)'
+        ).matches
+        ||
+        window.navigator.standalone === true
+      );
+
+    }
+
+
+    function wasDismissed(){
+
+      const value =
+        localStorage.getItem(
+          'bushnell_install_dismissed'
+        );
+
+      if(!value){
+        return false;
+      }
+
+      /*
+       * Show the suggestion again after 7 days.
+       */
+      const sevenDays =
+        7 * 24 * 60 * 60 * 1000;
+
+      return (
+        Date.now() -
+        Number(value)
+      ) < sevenDays;
+
+    }
+
+
+    function dismissInstall(){
+
+      installBanner
+        .classList
+        .remove('show');
+
+      localStorage.setItem(
+        'bushnell_install_dismissed',
+        String(Date.now())
+      );
+
+    }
+
+
+    /* ----------------------------------
+       ANDROID / CHROME INSTALL PROMPT
+       ---------------------------------- */
+
+    window.addEventListener(
+      'beforeinstallprompt',
+      event=>{
+
+        event.preventDefault();
+
+        deferredInstallPrompt =
+          event;
+
+        if(
+          !isStandalone() &&
+          !wasDismissed()
+        ){
+
+          installTitle.textContent =
+            "Install Bushnell Pick'em";
+
+          installText.textContent =
+            'Open the pool like an app without the normal browser bar.';
+
+          installButton.textContent =
+            'Install';
+
+          installBanner
+            .classList
+            .add('show');
+
+        }
+
+      }
+    );
+
+
+    /* ----------------------------------
+       IOS INSTALL MESSAGE
+       ---------------------------------- */
+
+    if(
+      isIOS() &&
+      !isStandalone() &&
+      !wasDismissed()
+    ){
+
+      installTitle.textContent =
+        "Add Bushnell Pick'em";
+
+      installText.textContent =
+        'Add the pool to your iPhone Home Screen.';
+
+      installButton.textContent =
+        'How';
+
+      installBanner
+        .classList
+        .add('show');
+
+    }
+
+
+    /* ----------------------------------
+       INSTALL BUTTON
+       ---------------------------------- */
+
+    installButton
+      .addEventListener(
+        'click',
+        async()=>{
+
+          /*
+           * iPhone / iPad:
+           * show instructions instead.
+           */
+          if(isIOS()){
+
+            iosModal
+              .classList
+              .add('show');
+
+            return;
+          }
+
+
+          /*
+           * Android / Chromium:
+           * use the real browser install dialog.
+           */
+          if(deferredInstallPrompt){
+
+            deferredInstallPrompt
+              .prompt();
+
+            const choice =
+              await deferredInstallPrompt
+                .userChoice;
+
+            deferredInstallPrompt =
+              null;
+
+            installBanner
+              .classList
+              .remove('show');
+
+            return;
+          }
+
+
+          /*
+           * Browser doesn't expose the prompt.
+           */
+          alert(
+            "Use your browser menu and choose 'Install app' or 'Add to Home screen'."
+          );
+
+        }
+      );
+
+
+    installClose
+      .addEventListener(
+        'click',
+        dismissInstall
+      );
+
+
+    iosDone
+      .addEventListener(
+        'click',
+        ()=>{
+
+          iosModal
+            .classList
+            .remove('show');
+
+        }
+      );
+
+
+    iosModal
+      .addEventListener(
+        'click',
+        event=>{
+
+          if(
+            event.target === iosModal
+          ){
+
+            iosModal
+              .classList
+              .remove('show');
+
+          }
+
+        }
+      );
+
+
+    /* ----------------------------------
+       INSTALL COMPLETED
+       ---------------------------------- */
+
+    window.addEventListener(
+      'appinstalled',
+      ()=>{
+
+        deferredInstallPrompt =
+          null;
+
+        installBanner
+          .classList
+          .remove('show');
+
+        localStorage.removeItem(
+          'bushnell_install_dismissed'
+        );
+
+      }
+    );
+
+  </script>
 
 </body>
 </html>
