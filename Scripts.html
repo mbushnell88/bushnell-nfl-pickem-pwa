@@ -1,0 +1,3601 @@
+<script>
+const S={
+  token:'',
+  bootstrap:null,
+  data:null,
+  selectedPlayer:'',
+  stageKey:'REG-1'
+};
+
+const $=id=>document.getElementById(id);
+
+const call=(fn,...args)=>new Promise((resolve,reject)=>
+  google.script.run
+    .withSuccessHandler(resolve)
+    .withFailureHandler(reject)[fn](...args)
+);
+
+const API={
+  bootstrap:()=>call('getBootstrap'),
+  init:(a,p,t,n)=>call('initializePool',a,p,t,n),
+  login:(id,p)=>call('loginPlayer',id,p),
+
+  resume:t=>call('resumeSession',t),
+  logout:t=>call('logout',t),
+  state:t=>call('getAppState',t),
+  stage:(t,k)=>call('getStageData',t,k),
+
+  pick:(t,g,team)=>call('savePick',t,g,team),
+  tie:(t,k,v)=>call('saveTiebreaker',t,k,v),
+  publicPicks:(t,g)=>call('getPublicPicksForGame',t,g),
+
+  add:(t,n,e,phone,p,team,r,emailReminders,smsReminders)=>call('addPlayer',t,n,e,phone,p,team,r,emailReminders,smsReminders),
+  update:(t,id,c)=>call('updatePlayer',t,id,c),
+  current:(t,k)=>call('setCurrentStage',t,k),
+
+  season:(t,s)=>call('setActiveSeason',t,s),
+  refresh:(t,k)=>call('refreshStageFromEspn',t,k),
+  refreshAll:t=>call('refreshFullSeasonFromEspn',t),
+
+  manual:(t,g)=>call('adminUpsertManualGame',t,g),
+  finalize:(t,n)=>call('finalizeSeason',t,n),
+
+  autoOn:t=>call('installAutoRefresh',t),
+  autoOff:t=>call('removeAutoRefresh',t),
+  remind:t=>call('sendPickReminderEmails',t),
+
+  history:(t,s)=>call('getSeasonHistory',t,s),
+  profile:(t,id)=>call('getPlayerProfile',t,id)
+};
+
+
+/* =========================================================
+   TEAM LOGOS
+   ========================================================= */
+
+function teamLogoUrl(abbr){
+  const key=String(abbr||'')
+    .trim()
+    .toLowerCase();
+
+  if(!key || key==='nfl'){
+    return '';
+  }
+
+  return 'https://a.espncdn.com/i/teamlogos/nfl/500/' +
+    encodeURIComponent(key) +
+    '.png';
+}
+
+
+function teamLogoMarkup(abbr,size,className){
+  const clean=String(abbr||'NFL')
+    .trim()
+    .toUpperCase();
+
+  const logoSize=Number(size)||42;
+  const extraClass=className||'';
+  const url=teamLogoUrl(clean);
+
+  if(!url){
+    return (
+      '<span class="team-logo-shell team-logo-fallback-only ' +
+      esc(extraClass) +
+      '" style="--logo-size:' +
+      logoSize +
+      'px;width:' +
+      logoSize +
+      'px;height:' +
+      logoSize +
+      'px;flex:0 0 ' +
+      logoSize +
+      'px">' +
+
+        '<span class="team-logo-fallback">' +
+          esc(clean) +
+        '</span>' +
+
+      '</span>'
+    );
+  }
+
+  return (
+    '<span class="team-logo-shell ' +
+    esc(extraClass) +
+    '" style="--logo-size:' +
+    logoSize +
+    'px;width:' +
+    logoSize +
+    'px;height:' +
+    logoSize +
+    'px;flex:0 0 ' +
+    logoSize +
+    'px">' +
+
+      '<img class="team-logo-img" ' +
+      'src="' +
+      esc(url) +
+      '" ' +
+      'alt="' +
+      esc(teamName(clean)) +
+      ' logo" ' +
+      'loading="lazy">' +
+
+      '<span class="team-logo-fallback">' +
+        esc(clean) +
+      '</span>' +
+
+    '</span>'
+  );
+}
+
+
+/* =========================================================
+   GLOBAL BUSY / LOADING FEEDBACK
+   ========================================================= */
+
+let BUSY_COUNT=0;
+
+function ensureBusyUi(){
+  if(!document.getElementById('globalBusyStyle')){
+    const style=document.createElement('style');
+
+    style.id='globalBusyStyle';
+
+    style.textContent=`
+      #globalBusyOverlay{
+        position:fixed;
+        inset:0;
+        z-index:9999;
+
+        display:flex;
+        align-items:flex-start;
+        justify-content:center;
+
+        padding-top:72px;
+
+        background:rgba(4,10,16,.18);
+        backdrop-filter:blur(1.5px);
+
+        opacity:0;
+        visibility:hidden;
+        pointer-events:none;
+
+        transition:
+          opacity .16s ease,
+          visibility .16s ease;
+      }
+
+      #globalBusyOverlay.show{
+        opacity:1;
+        visibility:visible;
+        pointer-events:all;
+        cursor:wait;
+      }
+
+      .global-busy-card{
+        display:flex;
+        align-items:center;
+        gap:12px;
+
+        min-width:190px;
+        max-width:min(420px,calc(100vw - 30px));
+
+        padding:13px 18px;
+
+        border:1px solid color-mix(
+          in srgb,
+          var(--secondary) 45%,
+          rgba(255,255,255,.15)
+        );
+
+        border-radius:999px;
+
+        background:rgba(7,16,24,.96);
+        color:#fff;
+
+        box-shadow:
+          0 14px 45px rgba(0,0,0,.45),
+          0 0 0 1px rgba(255,255,255,.03);
+
+        font-size:13px;
+        font-weight:900;
+        letter-spacing:.02em;
+      }
+
+      .global-busy-spinner{
+        width:20px;
+        height:20px;
+        flex:0 0 20px;
+
+        border-radius:50%;
+
+        border:3px solid rgba(255,255,255,.20);
+        border-top-color:var(--secondary);
+
+        animation:globalBusySpin .65s linear infinite;
+      }
+
+      #globalBusyMessage{
+        overflow:hidden;
+        text-overflow:ellipsis;
+        white-space:nowrap;
+      }
+
+      body.app-busy{
+        cursor:wait;
+      }
+
+      @keyframes globalBusySpin{
+        to{
+          transform:rotate(360deg);
+        }
+      }
+
+      @media(max-width:780px){
+        #globalBusyOverlay{
+          padding-top:58px;
+        }
+
+        .global-busy-card{
+          font-size:12px;
+          padding:11px 15px;
+        }
+      }
+    `;
+
+    document.head.appendChild(style);
+  }
+
+  if(!document.getElementById('globalBusyOverlay')){
+    const overlay=document.createElement('div');
+
+    overlay.id='globalBusyOverlay';
+
+    overlay.innerHTML=`
+      <div class="global-busy-card">
+        <div class="global-busy-spinner"></div>
+        <div id="globalBusyMessage">
+          Working...
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+  }
+}
+
+
+function setBusy(message='Working...'){
+  ensureBusyUi();
+
+  BUSY_COUNT++;
+
+  const overlay=$('globalBusyOverlay');
+  const msg=$('globalBusyMessage');
+
+  if(msg){
+    msg.textContent=message;
+  }
+
+  if(overlay){
+    overlay.classList.add('show');
+  }
+
+  document.body.classList.add('app-busy');
+  document.body.setAttribute('aria-busy','true');
+}
+
+
+function clearBusy(){
+  BUSY_COUNT=Math.max(0,BUSY_COUNT-1);
+
+  if(BUSY_COUNT>0){
+    return;
+  }
+
+  const overlay=$('globalBusyOverlay');
+
+  if(overlay){
+    overlay.classList.remove('show');
+  }
+
+  document.body.classList.remove('app-busy');
+  document.body.removeAttribute('aria-busy');
+}
+
+
+async function busyAction(message,action){
+  setBusy(message);
+
+  try{
+    return await action();
+  }finally{
+    clearBusy();
+  }
+}
+
+
+/* =========================================================
+   STARTUP / LOGIN
+   ========================================================= */
+
+async function start(){
+  try{
+    S.bootstrap=await API.bootstrap();
+
+    fillTeamSelects();
+
+    if(!S.bootstrap.initialized){
+      showOnly('setupView');
+      return;
+    }
+
+    const saved=
+      localStorage.getItem(
+        'bushnell_pickem_token'
+      );
+
+    if(saved){
+      try{
+        const x=
+          await API.resume(saved);
+
+        S.token=saved;
+        S.data=x.bootstrap;
+        S.stageKey=S.data.currentStage;
+
+        enterApp();
+        return;
+
+      }catch(e){
+        localStorage.removeItem(
+          'bushnell_pickem_token'
+        );
+      }
+    }
+
+    buildLogin();
+    showOnly('loginView');
+
+  }catch(e){
+    showOnly('loginView');
+    err(e);
+  }
+}
+
+
+function showOnly(id){
+  [
+    'loadingView',
+    'setupView',
+    'loginView',
+    'mainView'
+  ].forEach(
+    x=>
+      $(x).classList.toggle(
+        'hidden',
+        x!==id
+      )
+  );
+}
+
+
+function fillTeamSelects(){
+  const opts=
+    (S.bootstrap.teams||[])
+      .map(t=>`
+        <option value="${t.abbr}">
+          ${esc(t.name)}
+        </option>
+      `)
+      .join('');
+
+  $('setupTeam').innerHTML=opts;
+  $('setupTeam').value='MIN';
+}
+
+
+function buildLogin(){
+  $('loginPool').textContent=
+    S.bootstrap.poolName;
+
+  $('loginSeason').textContent=
+    S.bootstrap.season+
+    " NFL PICK'EM";
+
+  $('playerTiles').innerHTML=
+    (S.bootstrap.players||[])
+      .map(p=>`
+        <button
+          class="player-tile"
+          onclick="
+            selectPlayer(
+              '${p.playerId}',
+              this
+            )
+          "
+        >
+
+          ${teamLogoMarkup(
+            p.favoriteTeam,
+            34,
+            'login-team-logo'
+          )}
+
+          <span class="player-tile-copy">
+            <b>
+              ${esc(p.displayName)}
+            </b>
+
+            <small>
+              ${esc(teamName(p.favoriteTeam))}
+            </small>
+          </span>
+
+        </button>
+      `)
+      .join('');
+
+  if(S.bootstrap.players.length){
+    selectPlayer(
+      S.bootstrap.players[0].playerId,
+      $('playerTiles').firstElementChild
+    );
+  }
+}
+
+
+async function initializePool(){
+  await busyAction(
+    'Creating pool...',
+    async()=>{
+      try{
+        await API.init(
+          $('setupName').value,
+          $('setupPin').value,
+          $('setupTeam').value,
+          $('setupPool').value
+        );
+
+        location.reload();
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+function selectPlayer(id,el){
+  S.selectedPlayer=id;
+
+  document
+    .querySelectorAll('.player-tile')
+    .forEach(
+      x=>
+        x.classList.remove('selected')
+    );
+
+  if(el){
+    el.classList.add('selected');
+  }
+
+  const p=
+    S.bootstrap.players.find(
+      x=>x.playerId===id
+    );
+
+  if(p){
+    theme(p.favoriteTeam);
+  }
+}
+
+
+async function login(){
+  await busyAction(
+    'Signing in...',
+    async()=>{
+      try{
+        if(!S.selectedPlayer){
+          throw new Error(
+            'Choose a player.'
+          );
+        }
+
+        const x=
+          await API.login(
+            S.selectedPlayer,
+            $('loginPin').value
+          );
+
+        S.token=x.token;
+
+        localStorage.setItem(
+          'bushnell_pickem_token',
+          S.token
+        );
+
+        S.data=x.bootstrap;
+        S.stageKey=S.data.currentStage;
+
+        enterApp();
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+async function logout(){
+  stopLiveRefresh();
+
+  await busyAction(
+    'Signing out...',
+    async()=>{
+      try{
+        await API.logout(S.token);
+      }catch(e){}
+
+      localStorage.removeItem(
+        'bushnell_pickem_token'
+      );
+
+      location.reload();
+    }
+  );
+}
+
+
+/* =========================================================
+   MAIN APP
+   ========================================================= */
+
+function enterApp(){
+  showOnly('mainView');
+
+  theme(
+    S.data.player.favoriteTeam
+  );
+
+  $('seasonLabel').textContent=
+    S.data.season+' SEASON';
+
+  $('poolTitle').textContent=
+    S.data.poolName.toUpperCase();
+
+  $('userName').textContent=
+    S.data.player.displayName;
+
+  $('userBadge').innerHTML=
+    teamLogoMarkup(
+      S.data.player.favoriteTeam,
+      32,
+      'topbar-team-logo'
+    );
+
+  $('adminNav').classList.toggle(
+    'hidden',
+    !S.data.isAdmin
+  );
+
+  renderAll();
+  startLiveRefresh();
+}
+
+
+function renderAll(){
+  renderStageSelect();
+  renderHome();
+  renderPicks();
+  renderBoard();
+  renderLeaderboard();
+  renderHistory();
+  renderProfile(S.data.profile);
+  renderAdmin();
+}
+
+
+function renderStageSelect(){
+  const opts=
+    (S.data.stages||[])
+      .map(s=>`
+        <option
+          value="${s.key}"
+          ${
+            s.key===S.stageKey
+              ?'selected'
+              :''
+          }
+        >
+          ${esc(s.name)}
+        </option>
+      `)
+      .join('');
+
+  $('stageSelect').innerHTML=opts;
+}
+
+
+/* =========================================================
+   HOME
+   ========================================================= */
+
+function renderHome(){
+  const lb=S.data.leaderboard||[];
+
+  const gradedTotal=
+    lb.reduce(
+      (sum,row)=>
+        sum+Number(row.graded||0),
+      0
+    );
+
+  const lead=
+    gradedTotal>0
+      ?lb[0]
+      :null;
+
+  $('heroScore').innerHTML=
+    lead
+      ?`
+        <div class="eyebrow">
+          SEASON LEADER
+        </div>
+
+        <div class="hero-leader-row">
+
+          ${teamLogoMarkup(
+            lead.favoriteTeam,
+            62,
+            'hero-leader-logo'
+          )}
+
+          <div>
+
+            <h3>
+              ${esc(lead.displayName)}
+              -
+              ${lead.correct} correct
+            </h3>
+
+            <small>
+              ${lead.accuracy}% accuracy
+              -
+              ${lead.roundWins} round wins
+            </small>
+
+          </div>
+
+        </div>
+      `
+      :`
+        <div class="eyebrow">
+          READY FOR KICKOFF
+        </div>
+
+        <h3>
+          ${esc(
+            (S.data.stage||{}).name||
+            stageLabel(S.stageKey)
+          )}
+          is open.
+        </h3>
+
+        <small>
+          Make your picks before kickoff.
+          Standings begin once games are graded.
+        </small>
+      `;
+
+  const hist=
+    S.data.history||[];
+
+  const lastChamp=
+    hist.find(
+      x=>
+        x.status==='FINAL' &&
+        x.championNames
+    );
+
+  const stageRr=
+    S.data.stageResults||{};
+
+  const practiceRound=
+    stageIsPractice(stageRr);
+
+  const rr=
+    practiceRound
+      ?(S.data.preseasonResults||stageRr)
+      :stageRr;
+
+  const practiceLeaders=
+    rr.leaders||[];
+
+  let banner='';
+
+  if(
+    practiceRound &&
+    practiceLeaders.length
+  ){
+
+    const names=
+      practiceLeaders
+        .map(
+          x=>x.displayName
+        )
+        .join(' & ');
+
+    banner=`
+      <div class="champ-banner">
+
+        <div class="eyebrow">
+          ${
+            rr.complete
+              ?'PRESEASON CHAMPION'
+              :'PRESEASON LEADER'
+          }
+        </div>
+
+        <h3>
+          ${esc(names)}
+        </h3>
+
+        <small>
+          ${
+            rr.complete
+              ?(
+                rr.actualTiebreak==null
+                  ?'Preseason complete - cumulative preseason winner'
+                  :'Preseason complete - final tiebreak actual: '+
+                    rr.actualTiebreak
+              )
+              :(
+                Number(rr.completedGames||0)+
+                ' of '+
+                Number(rr.totalGames||0)+
+                ' preseason games graded - cumulative preseason standings'
+              )
+          }
+        </small>
+
+      </div>
+    `;
+
+  }else if(
+    rr.complete &&
+    (rr.winners||[]).length
+  ){
+
+    const names=
+      (rr.rows||[])
+        .filter(
+          x=>
+            (rr.winners||[])
+              .includes(x.playerId)
+        )
+        .map(
+          x=>x.displayName
+        )
+        .join(' & ');
+
+    banner=`
+      <div class="champ-banner winner-burst">
+
+        <div class="eyebrow">
+          ${esc(rr.stageName)} WINNER
+        </div>
+
+        <h3>
+          ${esc(names)}
+        </h3>
+
+        <small>
+          ${
+            rr.actualTiebreak==null
+              ?'Round complete'
+              :'Tiebreak actual: '+
+                rr.actualTiebreak
+          }
+        </small>
+
+      </div>
+    `;
+
+  }else if(lastChamp){
+
+    banner=`
+      <div class="champ-banner">
+
+        <div class="eyebrow">
+          REIGNING CHAMPION
+        </div>
+
+        <h3>
+          ${esc(lastChamp.championNames)}
+        </h3>
+
+        <small>
+          ${lastChamp.season}
+          Champion
+        </small>
+
+      </div>
+    `;
+  }
+
+  $('champBanner').innerHTML=
+    banner;
+
+  $('pickStatus').innerHTML=
+    (S.data.pickStatus||[])
+      .map(x=>`
+        <div class="status-row">
+
+          <span
+            class="
+              status-dot
+              ${x.complete?'good':''}
+            "
+          ></span>
+
+          <div class="grow">
+
+            <b>
+              ${esc(x.displayName)}
+            </b>
+
+            <small>
+              ${
+                x.complete
+                  ?'Complete'
+                  :x.remaining+
+                    ' remaining'
+              }
+            </small>
+
+          </div>
+
+          <b>
+            ${x.picked}/${x.total}
+          </b>
+
+        </div>
+      `)
+      .join('')
+    ||
+    `
+      <small>
+        No games loaded for this round.
+      </small>
+    `;
+
+  $('miniLeaderboard').innerHTML=
+    lb.slice(0,5)
+      .map(
+        x=>leaderRow(
+          x,
+          true
+        )
+      )
+      .join('')
+    ||
+    `
+      <small>
+        No scored games yet.
+      </small>
+    `;
+}
+
+
+/* =========================================================
+   PICKS
+   ========================================================= */
+
+function renderPicks(){
+  const st=
+    S.data.stage||{};
+
+  const games=
+    st.games||[];
+
+  const picks=
+    (st.myPicks||{}).selections||{};
+
+  $('picksStageTitle').textContent=
+    st.name||
+    stageLabel(S.stageKey);
+
+  $('pickProgress').textContent=
+    Object
+      .keys(picks)
+      .filter(
+        id=>
+          games.some(
+            g=>
+              g.gameId===id
+          )
+      )
+      .length
+    +' / '+
+    games.length+
+    ' picked';
+
+  $('tiebreakLabel').textContent=
+    st.tiebreakLabel||
+    'Total points on the final game date';
+
+  $('tiebreakValue').value=
+    (st.myPicks||{})
+      .tiebreaker??'';
+
+  $('tiebreakValue').disabled=
+    !!st.tiebreakLocked;
+
+  $('gameList').innerHTML=
+    games
+      .map(
+        g=>
+          gameCard(
+            g,
+            picks[g.gameId],
+            true
+          )
+      )
+      .join('')
+    ||
+    `
+      <div class="panel">
+        No games loaded for this round.
+        An admin can refresh the schedule.
+      </div>
+    `;
+}
+
+
+function gameCard(g,picked,interactive){
+  const final=
+    g.status==='FINAL';
+
+  const live=
+    g.status==='LIVE';
+
+  const center=
+    final||live
+      ?`
+        <div class="scoreline">
+
+          <div>
+            ${g.awayScore??'-'}
+          </div>
+
+          <small>
+            ${live?'LIVE':'FINAL'}
+          </small>
+
+          <div>
+            ${g.homeScore??'-'}
+          </div>
+
+        </div>
+      `
+      :`
+        <div class="vs">
+          AT
+        </div>
+      `;
+
+  return `
+    <div
+      class="
+        game-card
+        ${final?'final':''}
+        ${live?'live':''}
+      "
+      data-game="${g.gameId}"
+    >
+
+      <div class="game-meta">
+
+        <span>
+          ${fmtDate(g.kickoff)}
+        </span>
+
+        <span>
+          ${esc(
+            g.network||
+            g.status||
+            ''
+          )}
+        </span>
+
+      </div>
+
+      <div class="matchup">
+
+        <button
+          class="
+            team-pick
+            ${
+              picked===g.awayAbbr
+                ?'selected'
+                :''
+            }
+          "
+          ${
+            (!interactive||g.locked)
+              ?'disabled'
+              :''
+          }
+          onclick="
+            makePick(
+              '${g.gameId}',
+              '${g.awayAbbr}'
+            )
+          "
+        >
+
+          ${teamLogoMarkup(
+            g.awayAbbr,
+            54,
+            'matchup-team-logo'
+          )}
+
+          <span class="team-abbr">
+            ${esc(g.awayAbbr)}
+          </span>
+
+          <small>
+            ${esc(g.awayName)}
+          </small>
+
+        </button>
+
+        ${center}
+
+        <button
+          class="
+            team-pick
+            ${
+              picked===g.homeAbbr
+                ?'selected'
+                :''
+            }
+          "
+          ${
+            (!interactive||g.locked)
+              ?'disabled'
+              :''
+          }
+          onclick="
+            makePick(
+              '${g.gameId}',
+              '${g.homeAbbr}'
+            )
+          "
+        >
+
+          ${teamLogoMarkup(
+            g.homeAbbr,
+            54,
+            'matchup-team-logo'
+          )}
+
+          <span class="team-abbr">
+            ${esc(g.homeAbbr)}
+          </span>
+
+          <small>
+            ${esc(g.homeName)}
+          </small>
+
+        </button>
+
+      </div>
+
+      <div class="game-meta">
+
+        <span>
+          ${
+            g.locked
+              ?'Picks locked'
+              :'Open for picks'
+          }
+        </span>
+
+        <span>
+          ${esc(g.venue||'')}
+        </span>
+
+      </div>
+
+    </div>
+  `;
+}
+
+
+/* =========================================================
+   SAVE PICK
+   IMPORTANT: REFRESHES FULL CLIENT STATE AFTER SAVE
+   ========================================================= */
+
+async function makePick(gameId,team){
+  await busyAction(
+    'Saving '+team+' pick...',
+    async()=>{
+      try{
+        await API.pick(
+          S.token,
+          gameId,
+          team
+        );
+
+        /*
+         * Pull a fresh app state plus the currently viewed stage.
+         * This keeps Home, Picks, Board, Standings, round results,
+         * profile totals and other derived data synchronized without
+         * requiring a browser refresh.
+         */
+        await reloadState(false);
+
+        markLiveRefreshNow();
+
+        toast(
+          team+' saved'
+        );
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+async function saveTiebreaker(){
+  await busyAction(
+    'Saving tiebreaker...',
+    async()=>{
+      try{
+        const v=
+          $('tiebreakValue').value;
+
+        await API.tie(
+          S.token,
+          S.stageKey,
+          v
+        );
+
+        S.data
+          .stage
+          .myPicks
+          .tiebreaker=
+            Number(v);
+
+        toast(
+          'Tiebreaker saved'
+        );
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+/* =========================================================
+   ROUND / WEEK NAVIGATION
+   ========================================================= */
+
+async function changeStage(delta){
+  const list=
+    S.data.stages||[];
+
+  const i=
+    list.findIndex(
+      s=>s.key===S.stageKey
+    );
+
+  const ni=
+    Math.max(
+      0,
+      Math.min(
+        list.length-1,
+        i+delta
+      )
+    );
+
+  if(ni===i){
+    return;
+  }
+
+  await jumpStage(
+    list[ni].key
+  );
+}
+
+
+async function jumpStage(key){
+  await busyAction(
+    'Loading '+
+    stageLabel(key)+
+    '...',
+    async()=>{
+      try{
+        const x=
+          await API.stage(
+            S.token,
+            key
+          );
+
+        S.stageKey=key;
+
+        S.data.stage=
+          x.stage;
+
+        S.data.pickStatus=
+          x.pickStatus;
+
+        S.data.stageResults=
+          x.stageResults;
+
+        S.data.preseasonResults=
+          x.preseasonResults||S.data.preseasonResults;
+
+        renderStageSelect();
+        renderHome();
+        renderPicks();
+        renderBoard();
+        renderLeaderboard();
+
+        if(S.data.isAdmin){
+          renderAdmin();
+        }
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+/* =========================================================
+   PICK BOARD
+   ========================================================= */
+
+function renderBoard(){
+  const games=
+    S.data.stage||{};
+
+  const list=
+    games.games||[];
+
+  $('boardList').innerHTML=
+    list
+      .map(g=>`
+        <div class="game-card">
+
+          <div class="game-meta">
+
+            <span>
+              ${fmtDate(g.kickoff)}
+            </span>
+
+            <span>
+              ${
+                g.locked
+                  ?'REVEALED'
+                  :'HIDDEN UNTIL KICKOFF'
+              }
+            </span>
+
+          </div>
+
+          <div class="matchup">
+
+            <div class="team-pick">
+
+              ${teamLogoMarkup(
+                g.awayAbbr,
+                54,
+                'matchup-team-logo'
+              )}
+
+              <span class="team-abbr">
+                ${esc(g.awayAbbr)}
+              </span>
+
+              <small>
+                ${esc(g.awayName)}
+              </small>
+
+            </div>
+
+            <div class="vs">
+              AT
+            </div>
+
+            <div class="team-pick">
+
+              ${teamLogoMarkup(
+                g.homeAbbr,
+                54,
+                'matchup-team-logo'
+              )}
+
+              <span class="team-abbr">
+                ${esc(g.homeAbbr)}
+              </span>
+
+              <small>
+                ${esc(g.homeName)}
+              </small>
+
+            </div>
+
+          </div>
+
+          <div
+            class="board-picks"
+            id="board-${g.gameId}"
+          >
+
+            ${
+              g.locked
+                ?`
+                  <small class="muted">
+                    Loading pool picks...
+                  </small>
+                `
+                :`
+                  <small class="muted">
+                    Picks will appear here after kickoff.
+                  </small>
+                `
+            }
+
+          </div>
+
+        </div>
+      `)
+      .join('')
+    ||
+    `
+      <div class="panel">
+        No games loaded.
+      </div>
+    `;
+
+  list
+    .filter(
+      g=>g.locked
+    )
+    .forEach(
+      g=>
+        loadPublicPicks(
+          g.gameId
+        )
+    );
+}
+
+
+async function loadPublicPicks(gameId){
+  try{
+    const rows=
+      await API.publicPicks(
+        S.token,
+        gameId
+      );
+
+    const target=
+      $(`board-${gameId}`);
+
+    if(!target){
+      return;
+    }
+
+    target.innerHTML=
+      rows
+        .map(p=>`
+          <span class="pick-chip">
+
+            ${esc(p.playerName)}:
+
+            ${teamLogoMarkup(
+              p.pickTeam,
+              20,
+              'pick-chip-logo'
+            )}
+
+            <b>
+              ${esc(p.pickTeam)}
+            </b>
+
+          </span>
+        `)
+        .join('')
+      ||
+      `
+        <small>
+          No picks yet.
+        </small>
+      `;
+
+  }catch(e){
+    err(e);
+  }
+}
+
+
+/* =========================================================
+   STANDINGS
+   ========================================================= */
+
+function leaderRow(x,mini){
+  const logoSize=
+    mini ? 30 : 46;
+
+  const currentPlayerId=
+    S.data?.player?.playerId ||
+    S.data?.player?.id ||
+    '';
+
+  const rowPlayerId=
+    x.playerId ||
+    x.id ||
+    '';
+
+  const isMe=
+    !!currentPlayerId &&
+    !!rowPlayerId &&
+    currentPlayerId===rowPlayerId;
+
+  return `
+    <div class="
+      leader-row
+      ${isMe ? 'current-player' : ''}
+    ">
+
+      <span class="rank">
+        #${x.rank}
+      </span>
+
+      <div class="leader-logo-wrap">
+
+        ${teamLogoMarkup(
+          x.favoriteTeam,
+          logoSize,
+          mini
+            ?'mini-leader-logo'
+            :'leader-team-logo'
+        )}
+
+      </div>
+
+      <div class="grow">
+
+        <div class="leader-name-line">
+          <b>
+            ${esc(x.displayName)}
+          </b>
+
+          ${
+            isMe
+              ?'<span class="you-tag">YOU</span>'
+              :''
+          }
+        </div>
+
+        <small>
+          ${x.graded} graded picks
+        </small>
+
+      </div>
+
+      <div class="metric">
+
+        <b>
+          ${x.correct}
+        </b>
+
+        <small>
+          CORRECT
+        </small>
+
+      </div>
+
+      ${
+        mini
+          ?''
+          :`
+            <div class="metric">
+
+              <b>
+                ${x.accuracy}%
+              </b>
+
+              <small>
+                ACCURACY
+              </small>
+
+            </div>
+
+            <div class="metric">
+
+              <b>
+                ${x.roundWins}
+              </b>
+
+              <small>
+                ROUND WINS
+              </small>
+
+            </div>
+          `
+      }
+
+    </div>
+  `;
+}
+
+
+function renderLeaderboard(){
+  $('leaderboard').innerHTML=
+    (S.data.leaderboard||[])
+      .map(
+        x=>
+          leaderRow(
+            x,
+            false
+          )
+      )
+      .join('')
+    ||
+    `
+      <div class="panel">
+        No standings yet.
+      </div>
+    `;
+
+  const stageRr=
+    S.data.stageResults||{};
+
+  const practiceRound=
+    stageIsPractice(stageRr);
+
+  const r=
+    practiceRound
+      ?(S.data.preseasonResults||stageRr)
+      :stageRr;
+
+  $('roundResultsTitle').textContent=
+    practiceRound
+      ?'Preseason Standings'
+      :(
+          (
+            r.stageName||
+            stageLabel(S.stageKey)
+          )
+          +' Results'
+        );
+
+  $('roundResults').innerHTML=
+    (r.rows||[])
+      .map(x=>`
+        <div class="result-row">
+
+          <div class="grow">
+
+            <b>
+              ${esc(x.displayName)}
+            </b>
+
+            <small>
+              ${
+                r.complete
+                  ?(
+                    (r.winners||[])
+                      .includes(x.playerId)
+                      ?(
+                        practiceRound
+                          ?'PRESEASON CHAMPION'
+                          :'ROUND WINNER'
+                      )
+                      :'Final'
+                  )
+                  :(
+                    practiceRound &&
+                    x.leading
+                      ?'PRESEASON LEADER'
+                      :'In progress'
+                  )
+              }
+            </small>
+
+          </div>
+
+          <b>
+            ${x.correct}/${
+              practiceRound &&
+              !r.complete
+                ?Number(x.completedGames||0)
+                :x.totalGames
+            }
+          </b>
+
+          <span>
+            ${
+              x.tiebreakDiff==null
+                ?''
+                :'TB '+x.tiebreakDiff
+            }
+          </span>
+
+        </div>
+      `)
+      .join('')
+    ||
+    `
+      <small>
+        No results yet.
+      </small>
+    `;
+}
+
+
+/* =========================================================
+   HISTORY
+   ========================================================= */
+
+function renderHistory(){
+  const h=
+    S.data.history||[];
+
+  $('historyCards').innerHTML=
+    h
+      .map(x=>`
+        <div
+          class="
+            history-card
+            ${
+              x.status==='FINAL'
+                ?'final'
+                :''
+            }
+          "
+        >
+
+          <div class="eyebrow">
+            ${esc(x.status||'SEASON')}
+          </div>
+
+          <h3>
+            ${x.season}
+          </h3>
+
+          <p>
+            ${
+              x.championNames
+                ?`
+                  <b>
+                    Champion:
+                    ${esc(x.championNames)}
+                  </b>
+                `
+                :'No champion finalized yet.'
+            }
+          </p>
+
+          <button
+            onclick="
+              loadHistory(
+                ${x.season}
+              )
+            "
+          >
+            View Season
+          </button>
+
+        </div>
+      `)
+      .join('')
+    ||
+    `
+      <div class="panel">
+        No archived seasons yet.
+      </div>
+    `;
+}
+
+
+async function loadHistory(season){
+  await busyAction(
+    'Loading '+
+    season+
+    ' season...',
+    async()=>{
+      try{
+        const x=
+          await API.history(
+            S.token,
+            season
+          );
+
+        $('historyDetail').innerHTML=`
+          <div
+            class="panel"
+            style="margin-top:16px"
+          >
+
+            <div class="eyebrow">
+              ${season}
+              FINAL TABLE
+            </div>
+
+            <h2>
+              ${season}
+              Standings
+            </h2>
+
+            <div class="leaderboard">
+
+              ${
+                (x.leaderboard||[])
+                  .map(
+                    r=>
+                      leaderRow(
+                        r,
+                        false
+                      )
+                  )
+                  .join('')
+              }
+
+            </div>
+
+          </div>
+        `;
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+/* =========================================================
+   PLAYER PROFILE
+   ========================================================= */
+
+function renderProfile(p){
+  if(!p){
+    return;
+  }
+
+  const pl=
+    p.player;
+
+  $('profileName').textContent=
+    pl.displayName;
+
+  $('profileCard').innerHTML=`
+    <div class="profile-shell">
+
+      <div class="profile-head">
+
+        <div class="profile-big-badge">
+
+          ${teamLogoMarkup(
+            pl.favoriteTeam,
+            64,
+            'profile-team-logo'
+          )}
+
+        </div>
+
+        <div>
+
+          <h2>
+            ${esc(pl.displayName)}
+          </h2>
+
+          <small>
+            ${esc(
+              teamName(
+                pl.favoriteTeam
+              )
+            )}
+          </small>
+
+        </div>
+
+      </div>
+
+      <div class="metric-grid">
+
+        <div class="metric-box">
+          <b>
+            ${p.lifetime.correct}
+          </b>
+          <small>
+            LIFETIME CORRECT
+          </small>
+        </div>
+
+        <div class="metric-box">
+          <b>
+            ${p.lifetime.accuracy}%
+          </b>
+          <small>
+            ACCURACY
+          </small>
+        </div>
+
+        <div class="metric-box">
+          <b>
+            ${p.lifetime.roundWins}
+          </b>
+          <small>
+            ROUND WINS
+          </small>
+        </div>
+
+        <div class="metric-box">
+          <b>
+            ${p.lifetime.perfectRounds||0}
+          </b>
+          <small>
+            PERFECT ROUNDS
+          </small>
+        </div>
+
+        <div class="metric-box">
+          <b>
+            ${p.lifetime.currentWinStreak||0}
+          </b>
+          <small>
+            CURRENT STREAK
+          </small>
+        </div>
+
+        <div class="metric-box">
+          <b>
+            ${p.lifetime.maxWinStreak||0}
+          </b>
+          <small>
+            BEST STREAK
+          </small>
+        </div>
+
+      </div>
+
+      ${
+        p.bestRound
+          ?`
+            <div class="panel">
+
+              <b>
+                Best round:
+              </b>
+
+              ${p.bestRound.season}
+
+              ${esc(
+                p.bestRound.stageName
+              )}
+
+              -
+
+              ${p.bestRound.correct}/
+              ${p.bestRound.total}
+
+            </div>
+          `
+          :''
+      }
+
+      <h3>
+        Season Log
+      </h3>
+
+      ${
+        (p.seasons||[])
+          .map(s=>`
+            <div class="profile-season">
+
+              <b>
+                ${s.season}
+              </b>
+
+              <span>
+                #${s.rank}
+                -
+                ${s.correct}/${s.graded}
+                -
+                ${s.accuracy}%
+                -
+                ${s.roundWins} wins
+              </span>
+
+            </div>
+          `)
+          .join('')
+        ||
+        `
+          <small>
+            No graded seasons yet.
+          </small>
+        `
+      }
+
+      <button
+        class="primary no-print"
+        onclick="logout()"
+      >
+        Sign Out
+      </button>
+
+    </div>
+  `;
+}
+
+
+async function openPlayerProfile(id){
+  await busyAction(
+    'Loading player profile...',
+    async()=>{
+      try{
+        const p=
+          await API.profile(
+            S.token,
+            id
+          );
+
+        renderProfile(p);
+        showPage('Profile');
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+/* =========================================================
+   ADMIN
+   ========================================================= */
+
+function renderAdmin(){
+  if(!S.data.isAdmin){
+    return;
+  }
+
+  const teams=
+    (S.data.teams||[])
+      .filter(
+        t=>t.abbr!=='NFL'
+      );
+
+  const teamOpts=
+    teams
+      .map(t=>`
+        <option value="${t.abbr}">
+          ${esc(t.name)}
+        </option>
+      `)
+      .join('');
+
+  const currentStageName=
+    stageLabel(S.stageKey);
+
+  const homeStageName=
+    stageLabel(
+      S.data.currentStage||
+      S.stageKey
+    );
+
+  const autoOn=
+    !!S.data.autoRefreshInstalled;
+
+  const playerRows=
+    (S.data.adminPlayers||S.data.players||[])
+      .map(p=>`
+        <div class="admin-player">
+
+          <div class="admin-player-name">
+
+            ${teamLogoMarkup(
+              p.favoriteTeam,
+              34,
+              'admin-player-logo'
+            )}
+
+            <span class="admin-player-copy">
+
+              <b>
+                ${esc(p.displayName)}
+              </b>
+
+              <small>
+                ${esc(teamName(p.favoriteTeam))}
+              </small>
+
+            </span>
+
+          </div>
+
+          <div class="admin-player-control admin-player-email">
+            <label>Email</label>
+            <input
+              id="email-${p.playerId}"
+              type="email"
+              autocomplete="email"
+              value="${esc(p.email||'')}"
+              placeholder="Required"
+            >
+          </div>
+
+          <div class="admin-player-control admin-player-phone">
+            <label>Mobile</label>
+            <input
+              id="phone-${p.playerId}"
+              type="tel"
+              autocomplete="tel"
+              value="${esc(p.mobilePhone||'')}"
+              placeholder="Optional"
+            >
+          </div>
+
+          <div class="admin-player-control admin-player-reminders">
+            <label>Reminders</label>
+            <div class="admin-reminder-checks">
+              <label><input id="emailRem-${p.playerId}" type="checkbox" ${p.emailReminders!==false?'checked':''}> Email</label>
+              <label><input id="smsRem-${p.playerId}" type="checkbox" ${p.smsReminders?'checked':''}> Text</label>
+            </div>
+          </div>
+
+          <div class="admin-player-control">
+            <label>
+              Team
+            </label>
+
+            <select id="team-${p.playerId}">
+              ${
+                teams
+                  .map(t=>`
+                    <option
+                      value="${t.abbr}"
+                      ${
+                        t.abbr===p.favoriteTeam
+                          ?'selected'
+                          :''
+                      }
+                    >
+                      ${esc(t.abbr)}
+                    </option>
+                  `)
+                  .join('')
+              }
+            </select>
+          </div>
+
+          <div class="admin-player-control">
+            <label>
+              Role
+            </label>
+
+            <select id="role-${p.playerId}">
+
+              <option
+                ${
+                  p.role==='PLAYER'
+                    ?'selected'
+                    :''
+                }
+              >
+                PLAYER
+              </option>
+
+              <option
+                ${
+                  p.role==='ADMIN'
+                    ?'selected'
+                    :''
+                }
+              >
+                ADMIN
+              </option>
+
+            </select>
+          </div>
+
+          <div class="admin-player-control">
+            <label>
+              Status
+            </label>
+
+            <select id="active-${p.playerId}">
+
+              <option
+                value="true"
+                ${
+                  p.active
+                    ?'selected'
+                    :''
+                }
+              >
+                Active
+              </option>
+
+              <option
+                value="false"
+                ${
+                  !p.active
+                    ?'selected'
+                    :''
+                }
+              >
+                Inactive
+              </option>
+
+            </select>
+          </div>
+
+          <div class="admin-player-control admin-player-pin">
+            <label>
+              Reset PIN
+            </label>
+
+            <input
+              id="pin-${p.playerId}"
+              type="password"
+              inputmode="numeric"
+              maxlength="8"
+              placeholder="Optional"
+            >
+          </div>
+
+          <button
+            class="admin-save-player"
+            onclick="
+              adminSavePlayer(
+                '${p.playerId}'
+              )
+            "
+          >
+            Save
+          </button>
+
+        </div>
+      `)
+      .join('');
+
+  $('adminPanel').innerHTML=`
+    <div class="commissioner-dashboard">
+
+      <div class="admin-overview">
+
+        <div class="admin-overview-copy">
+
+          <div class="eyebrow">
+            COMMISSIONER CONTROL CENTER
+          </div>
+
+          <h3>
+            ${esc(currentStageName)}
+          </h3>
+
+          <p>
+            Manage the live pool, schedule, scoring,
+            players and season settings from one place.
+          </p>
+
+        </div>
+
+        <div class="admin-overview-stats">
+
+          <div class="admin-overview-stat">
+            <small>
+              ACTIVE SEASON
+            </small>
+            <b>
+              ${S.data.season}
+            </b>
+          </div>
+
+          <div class="admin-overview-stat">
+            <small>
+              HOME ROUND
+            </small>
+            <b>
+              ${esc(homeStageName)}
+            </b>
+          </div>
+
+          <div class="admin-overview-stat">
+            <small>
+              AUTO REFRESH
+            </small>
+            <b class="${autoOn?'admin-status-on':'admin-status-off'}">
+              ${autoOn?'ON':'OFF'}
+            </b>
+          </div>
+
+          <div class="admin-overview-stat">
+            <small>
+              PLAYERS
+            </small>
+            <b>
+              ${(S.data.adminPlayers||S.data.players||[]).length}
+            </b>
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <div class="admin-grid admin-primary-grid">
+
+        <section class="admin-card admin-card-featured">
+
+          <div class="admin-card-head">
+
+            <div>
+              <div class="admin-card-kicker">
+                GAME OPERATIONS
+              </div>
+
+              <h3>
+                Schedule & Scores
+              </h3>
+            </div>
+
+            <span class="admin-card-icon">
+              ↻
+            </span>
+
+          </div>
+
+          <div class="admin-current-round">
+
+            <small>
+              CURRENTLY VIEWING
+            </small>
+
+            <b>
+              ${esc(currentStageName)}
+            </b>
+
+            ${
+              S.stageKey===S.data.currentStage
+                ?`
+                  <span class="admin-round-home">
+                    HOME ROUND
+                  </span>
+                `
+                :''
+            }
+
+          </div>
+
+          <p class="admin-help">
+            Refresh ESPN schedule and score data,
+            or make this round the default round shown
+            when players open the app.
+          </p>
+
+          <div class="admin-action-grid">
+
+            <button
+              class="admin-action-primary"
+              onclick="adminRefreshStage()"
+            >
+              Refresh This Round
+            </button>
+
+            <button
+              onclick="adminRefreshAll()"
+            >
+              Load / Refresh Full Season
+            </button>
+
+            <button
+              class="admin-action-wide"
+              onclick="adminSetCurrentStage()"
+            >
+              Make This the Home Round
+            </button>
+
+          </div>
+
+        </section>
+
+
+        <section class="admin-card">
+
+          <div class="admin-card-head">
+
+            <div>
+              <div class="admin-card-kicker">
+                AUTOMATION
+              </div>
+
+              <h3>
+                Score Refresh
+              </h3>
+            </div>
+
+            <span
+              class="
+                admin-status-pill
+                ${autoOn?'is-on':'is-off'}
+              "
+            >
+              ${autoOn?'ON':'OFF'}
+            </span>
+
+          </div>
+
+          <p class="admin-help">
+            Automatic refresh checks for updated
+            schedules and scores every hour.
+          </p>
+
+          <div
+            class="
+              admin-auto-state
+              ${autoOn?'is-on':'is-off'}
+            "
+          >
+
+            <span class="admin-auto-dot"></span>
+
+            <div>
+              <b>
+                ${
+                  autoOn
+                    ?'Hourly refresh is active'
+                    :'Hourly refresh is disabled'
+                }
+              </b>
+
+              <small>
+                ${
+                  autoOn
+                    ?'The pool will continue updating automatically.'
+                    :'Turn it on to keep scores updated automatically.'
+                }
+              </small>
+            </div>
+
+          </div>
+
+          <div class="admin-button-row">
+
+            <button
+              class="${autoOn?'':'admin-action-primary'}"
+              onclick="adminAuto(true)"
+              ${autoOn?'disabled':''}
+            >
+              Turn On
+            </button>
+
+            <button
+              class="danger"
+              onclick="adminAuto(false)"
+              ${!autoOn?'disabled':''}
+            >
+              Turn Off
+            </button>
+
+          </div>
+
+          <button
+            type="button"
+            style="width:100%;margin-top:10px"
+            onclick="adminSendReminders()"
+          >
+            Send Pick Reminder Emails
+          </button>
+
+          <small class="admin-help" style="display:block;margin-top:8px">
+            Sends email only to players who still have open picks or an unlocked tiebreaker missing.
+          </small>
+
+        </section>
+
+
+        <section class="admin-card">
+
+          <div class="admin-card-head">
+
+            <div>
+              <div class="admin-card-kicker">
+                ROSTER
+              </div>
+
+              <h3>
+                Add Player
+              </h3>
+            </div>
+
+            <span class="admin-card-icon">
+              +
+            </span>
+
+          </div>
+
+          <p class="admin-help">
+            Create a player account with required email, optional mobile number,
+            reminder preferences, and favorite NFL team.
+          </p>
+
+          <div class="admin-field">
+            <label for="aName">
+              Player Name
+            </label>
+
+            <input
+              id="aName"
+              placeholder="Name"
+              autocomplete="name"
+            >
+          </div>
+
+          <div class="admin-field">
+            <label for="aEmail">Player Email</label>
+            <input
+              id="aEmail"
+              type="email"
+              autocomplete="email"
+              placeholder="Required email address"
+              required
+            >
+          </div>
+
+          <div class="admin-field">
+            <label for="aPhone">Mobile Number</label>
+            <input
+              id="aPhone"
+              type="tel"
+              autocomplete="tel"
+              placeholder="Optional for text reminders"
+            >
+          </div>
+
+          <div class="admin-field">
+            <label>Reminder Preferences</label>
+            <div class="admin-reminder-checks add-player-reminders">
+              <label><input id="aEmailRem" type="checkbox" checked> Email reminders</label>
+              <label><input id="aSmsRem" type="checkbox"> Text reminders</label>
+            </div>
+          </div>
+
+          <div class="admin-field">
+            <label for="aPin">
+              Player PIN
+            </label>
+
+            <input
+              id="aPin"
+              type="password"
+              inputmode="numeric"
+              maxlength="8"
+              placeholder="4-8 digit PIN"
+            >
+          </div>
+
+          <div class="admin-field">
+            <label for="aTeam">
+              Favorite Team
+            </label>
+
+            <select id="aTeam">
+              ${teamOpts}
+            </select>
+          </div>
+
+          <button
+            class="admin-action-primary"
+            onclick="adminAddPlayer()"
+          >
+            Add Player
+          </button>
+
+        </section>
+
+
+        <section class="admin-card admin-season-card">
+
+          <div class="admin-card-head">
+
+            <div>
+              <div class="admin-card-kicker">
+                LEAGUE YEAR
+              </div>
+
+              <h3>
+                Season
+              </h3>
+            </div>
+
+            <span class="admin-season-badge">
+              ${S.data.season}
+            </span>
+
+          </div>
+
+          <p class="admin-help">
+            Change the active NFL season or close
+            the current season after all results
+            have been finalized.
+          </p>
+
+          <div class="admin-field">
+            <label for="aSeason">
+              Active Season
+            </label>
+
+            <input
+              id="aSeason"
+              type="number"
+              value="${S.data.season}"
+              min="2020"
+              max="2100"
+            >
+          </div>
+
+          <button
+            onclick="adminSetSeason()"
+          >
+            Set Active Season
+          </button>
+
+          <div class="admin-danger-zone">
+
+            <div class="admin-danger-title">
+              Finalize Season
+            </div>
+
+            <p>
+              This records the champion and closes
+              the ${S.data.season} season.
+            </p>
+
+            <input
+              id="finalNotes"
+              placeholder="Optional champion note"
+            >
+
+            <button
+              class="danger admin-danger-button"
+              onclick="adminFinalize()"
+            >
+              Finalize ${S.data.season} Season
+            </button>
+
+          </div>
+
+        </section>
+
+      </div>
+
+
+      <section class="admin-card admin-roster-card">
+
+        <div class="admin-card-head">
+
+          <div>
+            <div class="admin-card-kicker">
+              PLAYER MANAGEMENT
+            </div>
+
+            <h3>
+              Players
+            </h3>
+          </div>
+
+          <span class="admin-count-badge">
+            ${(S.data.players||[]).length}
+          </span>
+
+        </div>
+
+        <p class="admin-help">
+          Change favorite teams, permissions,
+          account status or reset a player's PIN.
+        </p>
+
+        <div class="admin-player-list">
+          ${
+            playerRows||
+            `
+              <div class="admin-empty-state">
+                No players have been added yet.
+              </div>
+            `
+          }
+        </div>
+
+      </section>
+
+
+      <section class="admin-card admin-manual-card">
+
+        <div class="admin-card-head">
+
+          <div>
+            <div class="admin-card-kicker">
+              DATA OVERRIDE
+            </div>
+
+            <h3>
+              Manual Game Editor
+            </h3>
+          </div>
+
+          <span class="admin-warning-badge">
+            FALLBACK TOOL
+          </span>
+
+        </div>
+
+        <div class="admin-manual-warning">
+
+          <b>
+            Use only when the data feed is wrong or unavailable.
+          </b>
+
+          <small>
+            Normal schedules and scores should be managed
+            through Schedule & Scores above.
+          </small>
+
+        </div>
+
+        <div class="admin-field">
+          <label for="mGameId">
+            Game ID
+          </label>
+
+          <input
+            id="mGameId"
+            placeholder="Optional — enter an existing ID to update a game"
+            onkeydown="
+              if(event.key==='Enter'){
+                event.preventDefault();
+                adminLoadManualGame();
+              }
+            "
+          >
+
+          <button
+            type="button"
+            style="width:100%;margin-top:8px"
+            onclick="adminLoadManualGame()"
+          >
+            Load Game
+          </button>
+        </div>
+
+        <div class="admin-manual-grid">
+
+          <div class="admin-field">
+            <label for="mAway">
+              Away Team
+            </label>
+
+            <select id="mAway">
+              ${teamOpts}
+            </select>
+          </div>
+
+          <div class="admin-field">
+            <label for="mHome">
+              Home Team
+            </label>
+
+            <select id="mHome">
+              ${teamOpts}
+            </select>
+          </div>
+
+          <div class="admin-field">
+            <label for="mKick">
+              Kickoff
+            </label>
+
+            <input
+              id="mKick"
+              type="datetime-local"
+            >
+          </div>
+
+          <div class="admin-field">
+            <label for="mStatus">
+              Game Status
+            </label>
+
+            <select id="mStatus">
+              <option>SCHEDULED</option>
+              <option>LIVE</option>
+              <option>FINAL</option>
+            </select>
+          </div>
+
+          <div class="admin-field">
+            <label for="mAwayScore">
+              Away Score
+            </label>
+
+            <input
+              id="mAwayScore"
+              type="number"
+              placeholder="Away score"
+            >
+          </div>
+
+          <div class="admin-field">
+            <label for="mHomeScore">
+              Home Score
+            </label>
+
+            <input
+              id="mHomeScore"
+              type="number"
+              placeholder="Home score"
+            >
+          </div>
+
+        </div>
+
+        <button
+          class="admin-action-primary"
+          onclick="adminManualGame()"
+        >
+          Add / Update Manual Game
+        </button>
+
+      </section>
+
+    </div>
+  `;
+}
+
+
+/* =========================================================
+   ADMIN ACTIONS
+   ========================================================= */
+
+async function adminSendReminders(){
+  await busyAction(
+    'Sending pick reminders...',
+    async()=>{
+      try{
+        const x=await API.remind(S.token);
+        const skipped=(x.skippedNoEmail||[]).length;
+        toast(
+          x.sent+' reminder email'+(x.sent===1?'':'s')+' sent'+
+          (skipped?' - '+skipped+' player'+(skipped===1?'':'s')+' missing email':'')
+        );
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+async function adminAddPlayer(){
+  await busyAction(
+    'Adding player...',
+    async()=>{
+      try{
+        const result=await API.add(
+          S.token,
+          $('aName').value,
+          $('aEmail').value,
+          $('aPhone').value,
+          $('aPin').value,
+          $('aTeam').value,
+          'PLAYER',
+          $('aEmailRem').checked,
+          $('aSmsRem').checked
+        );
+
+        await reloadState();
+
+        toast(
+          result&&result.welcomeEmailSent
+            ?'Player added - welcome email sent'
+            :'Player added - welcome email could not be sent',
+          !(result&&result.welcomeEmailSent)
+        );
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+async function adminSavePlayer(id){
+  await busyAction(
+    'Updating player...',
+    async()=>{
+      try{
+        const c={
+          email:
+            $('email-'+id).value,
+
+          mobilePhone:
+            $('phone-'+id).value,
+
+          emailReminders:
+            $('emailRem-'+id).checked,
+
+          smsReminders:
+            $('smsRem-'+id).checked,
+
+          favoriteTeam:
+            $('team-'+id).value,
+
+          role:
+            $('role-'+id).value,
+
+          active:
+            $('active-'+id).value==='true'
+        };
+
+        const pin=
+          $('pin-'+id).value;
+
+        if(pin){
+          c.pin=pin;
+        }
+
+        await API.update(
+          S.token,
+          id,
+          c
+        );
+
+        await reloadState();
+
+        toast(
+          'Player updated'
+        );
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+async function adminRefreshStage(){
+  await busyAction(
+    'Refreshing '+
+    stageLabel(S.stageKey)+
+    '...',
+    async()=>{
+      try{
+        const x=
+          await API.refresh(
+            S.token,
+            S.stageKey
+          );
+
+        await reloadState(false);
+
+        toast(
+          x.imported+
+          ' games updated'
+        );
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+async function adminRefreshAll(){
+  await busyAction(
+    'Refreshing full NFL season...',
+    async()=>{
+      try{
+        const x=
+          await API.refreshAll(
+            S.token
+          );
+
+        await reloadState();
+
+        toast(
+          x.imported+
+          ' games imported / updated'
+        );
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+async function adminSetCurrentStage(){
+  await busyAction(
+    'Updating home round...',
+    async()=>{
+      try{
+        await API.current(
+          S.token,
+          S.stageKey
+        );
+
+        S.data.currentStage=
+          S.stageKey;
+
+        renderAdmin();
+
+        toast(
+          stageLabel(S.stageKey)+
+          ' is now the home round'
+        );
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+async function adminSetSeason(){
+  await busyAction(
+    'Changing season...',
+    async()=>{
+      try{
+        await API.season(
+          S.token,
+          $('aSeason').value
+        );
+
+        await reloadState();
+
+        toast(
+          'Season changed'
+        );
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+async function adminFinalize(){
+  if(
+    !confirm(
+      'Finalize the '+
+      S.data.season+
+      ' season and record the champion?'
+    )
+  ){
+    return;
+  }
+
+  await busyAction(
+    'Finalizing season...',
+    async()=>{
+      try{
+        const x=
+          await API.finalize(
+            S.token,
+            $('finalNotes').value
+          );
+
+        await reloadState();
+
+        toast(
+          'Champion: '+
+          x.championNames
+        );
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+async function adminAuto(on){
+  await busyAction(
+    on
+      ?'Turning automatic refresh on...'
+      :'Turning automatic refresh off...',
+    async()=>{
+      try{
+        if(on){
+          await API.autoOn(
+            S.token
+          );
+        }else{
+          await API.autoOff(
+            S.token
+          );
+        }
+
+        await reloadState();
+
+        toast(
+          'Automatic refresh '+
+          (
+            on
+              ?'enabled'
+              :'disabled'
+          )
+        );
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+function toDateTimeLocalValue(value){
+  if(!value){
+    return '';
+  }
+
+  const d=
+    value instanceof Date
+      ?value
+      :new Date(value);
+
+  if(Number.isNaN(d.getTime())){
+    return '';
+  }
+
+  const pad=n=>
+    String(n).padStart(2,'0');
+
+  return (
+    d.getFullYear()+
+    '-'+pad(d.getMonth()+1)+
+    '-'+pad(d.getDate())+
+    'T'+pad(d.getHours())+
+    ':'+pad(d.getMinutes())
+  );
+}
+
+
+function adminLoadManualGame(){
+  const id=
+    String($('mGameId')?.value||'')
+      .trim();
+
+  if(!id){
+    toast(
+      'Enter a Game ID first',
+      true
+    );
+    return;
+  }
+
+  const games=
+    S.data?.stage?.games||[];
+
+  const game=
+    games.find(
+      g=>
+        String(g.gameId??'')
+          .trim()===id
+    );
+
+  if(!game){
+    toast(
+      'Game ID not found in this round',
+      true
+    );
+    return;
+  }
+
+  const kickoff=
+    toDateTimeLocalValue(
+      game.kickoff
+    );
+
+  if(!kickoff){
+    toast(
+      'Game found, but its kickoff time is invalid',
+      true
+    );
+    return;
+  }
+
+  $('mAway').value=
+    game.awayAbbr||'';
+
+  $('mHome').value=
+    game.homeAbbr||'';
+
+  $('mKick').value=
+    kickoff;
+
+  $('mStatus').value=
+    game.status||'SCHEDULED';
+
+  $('mAwayScore').value=
+    game.awayScore==null
+      ?''
+      :game.awayScore;
+
+  $('mHomeScore').value=
+    game.homeScore==null
+      ?''
+      :game.homeScore;
+
+  toast(
+    'Game loaded'
+  );
+}
+
+
+async function adminManualGame(){
+  const kickoff=
+    String($('mKick')?.value||'')
+      .trim();
+
+  if(!kickoff){
+    toast(
+      'Enter a kickoff date and time',
+      true
+    );
+    return;
+  }
+
+  const parsedKickoff=
+    new Date(kickoff);
+
+  if(Number.isNaN(parsedKickoff.getTime())){
+    toast(
+      'Invalid kickoff date/time',
+      true
+    );
+    return;
+  }
+
+  await busyAction(
+    'Saving game...',
+    async()=>{
+      try{
+        await API.manual(
+          S.token,
+          {
+            gameId:
+              String($('mGameId').value||'')
+                .trim(),
+
+            season:
+              S.data.season,
+
+            stageKey:
+              S.stageKey,
+
+            awayAbbr:
+              $('mAway').value,
+
+            homeAbbr:
+              $('mHome').value,
+
+            kickoff,
+
+            status:
+              $('mStatus').value,
+
+            awayScore:
+              $('mAwayScore').value,
+
+            homeScore:
+              $('mHomeScore').value
+          }
+        );
+
+        await reloadState(false);
+        markLiveRefreshNow();
+
+        toast(
+          'Manual game saved'
+        );
+
+      }catch(e){
+        err(e);
+      }
+    }
+  );
+}
+
+
+/* =========================================================
+   STATE REFRESH
+   ========================================================= */
+
+const LIVE_REFRESH_MS=45000;
+const LIVE_REFRESH_MIN_GAP_MS=8000;
+
+let LIVE_REFRESH_TIMER=null;
+let LIVE_REFRESH_IN_FLIGHT=false;
+let LAST_LIVE_REFRESH=0;
+
+
+function markLiveRefreshNow(){
+  LAST_LIVE_REFRESH=Date.now();
+}
+
+
+function currentPageName(){
+  const active=
+    document.querySelector('.page.active');
+
+  return active
+    ?active.id
+    :'';
+}
+
+
+function startLiveRefresh(){
+  stopLiveRefresh();
+  markLiveRefreshNow();
+
+  LIVE_REFRESH_TIMER=
+    setInterval(
+      ()=>refreshLiveState(false),
+      LIVE_REFRESH_MS
+    );
+}
+
+
+function stopLiveRefresh(){
+  if(LIVE_REFRESH_TIMER){
+    clearInterval(LIVE_REFRESH_TIMER);
+    LIVE_REFRESH_TIMER=null;
+  }
+}
+
+
+async function refreshLiveState(force=false){
+  if(
+    !S.token ||
+    !S.data ||
+    LIVE_REFRESH_IN_FLIGHT ||
+    BUSY_COUNT>0 ||
+    document.hidden
+  ){
+    return;
+  }
+
+  /*
+   * Do not silently rebuild the Admin page while somebody may be
+   * typing into a form. Admin actions already refresh state after save.
+   */
+  if(currentPageName()==='pageAdmin'){
+    return;
+  }
+
+  const now=Date.now();
+
+  if(
+    !force &&
+    now-LAST_LIVE_REFRESH<LIVE_REFRESH_MIN_GAP_MS
+  ){
+    return;
+  }
+
+  LIVE_REFRESH_IN_FLIGHT=true;
+
+  try{
+    await reloadState(false);
+    markLiveRefreshNow();
+
+  }catch(e){
+    /*
+     * A background refresh should never interrupt the player with an
+     * error toast. The next navigation, action or interval will retry.
+     */
+    console.warn(
+      'Background refresh failed:',
+      e
+    );
+
+  }finally{
+    LIVE_REFRESH_IN_FLIGHT=false;
+  }
+}
+
+
+async function reloadState(resetStage=true){
+  S.data=
+    await API.state(
+      S.token
+    );
+
+  if(resetStage){
+    S.stageKey=
+      S.data.currentStage;
+
+  }else{
+    const x=
+      await API.stage(
+        S.token,
+        S.stageKey
+      );
+
+    S.data.stage=
+      x.stage;
+
+    S.data.pickStatus=
+      x.pickStatus;
+
+    S.data.stageResults=
+      x.stageResults;
+
+    S.data.preseasonResults=
+      x.preseasonResults||S.data.preseasonResults;
+  }
+
+  renderAll();
+}
+
+
+document.addEventListener(
+  'visibilitychange',
+  ()=>{
+    if(!document.hidden){
+      refreshLiveState(true);
+    }
+  }
+);
+
+
+/* =========================================================
+   NAVIGATION / HELPERS
+   ========================================================= */
+
+function showPage(name,btn){
+  document
+    .querySelectorAll('.page')
+    .forEach(
+      p=>
+        p.classList.remove('active')
+    );
+
+  $('page'+name)
+    .classList.add('active');
+
+  document
+    .querySelectorAll(
+      '.bottom-nav button'
+    )
+    .forEach(
+      b=>
+        b.classList.remove('active')
+    );
+
+  if(btn){
+    btn.classList.add('active');
+  }
+
+  if(name==='Profile'){
+    renderProfile(
+      S.data.profile
+    );
+  }
+
+  /*
+   * Navigation is also a natural refresh point. This lets Home,
+   * Board and Standings pick up server-side score/status changes
+   * immediately instead of waiting for a full browser reload.
+   */
+  if(name!=='Admin'){
+    refreshLiveState(false);
+  }
+}
+
+
+function theme(abbr){
+  const t=
+    (
+      S.bootstrap?.teams||
+      S.data?.teams||
+      []
+    )
+      .find(
+        x=>
+          x.abbr===abbr
+      )
+    ||
+    {
+      primary:'#1b2430',
+      secondary:'#4f8cff'
+    };
+
+  document
+    .documentElement
+    .style
+    .setProperty(
+      '--primary',
+      t.primary
+    );
+
+  document
+    .documentElement
+    .style
+    .setProperty(
+      '--secondary',
+      t.secondary
+    );
+}
+
+
+function teamName(abbr){
+  const t=
+    (
+      S.bootstrap?.teams||
+      S.data?.teams||
+      []
+    )
+      .find(
+        x=>
+          x.abbr===abbr
+      );
+
+  return t
+    ?t.name
+    :abbr;
+}
+
+
+function stageIsPractice(result){
+  const key=
+    String(
+      (result&&result.stageKey)||
+      S.stageKey||
+      ''
+    )
+      .toUpperCase();
+
+  return !!(
+    result&&
+    result.practiceOnly
+  )||
+  key.indexOf('PRE-')===0;
+}
+
+
+function stageLabel(k){
+  const s=
+    (
+      S.data?.stages||
+      S.bootstrap?.stages||
+      []
+    )
+      .find(
+        x=>
+          x.key===k
+      );
+
+  return s
+    ?s.name
+    :k;
+}
+
+
+function fmtDate(v){
+  try{
+    return new Intl.DateTimeFormat(
+      undefined,
+      {
+        weekday:'short',
+        month:'short',
+        day:'numeric',
+        hour:'numeric',
+        minute:'2-digit'
+      }
+    )
+      .format(
+        new Date(v)
+      );
+
+  }catch(e){
+    return v;
+  }
+}
+
+
+function esc(s){
+  return String(s??'')
+    .replace(
+      /[&<>"']/g,
+      c=>({
+        '&':'&amp;',
+        '<':'&lt;',
+        '>':'&gt;',
+        '"':'&quot;',
+        "'":'&#39;'
+      }[c])
+    );
+}
+
+
+function toast(msg,bad=false){
+  const el=
+    $('toast');
+
+  el.textContent=
+    msg;
+
+  el.classList.toggle(
+    'bad',
+    bad
+  );
+
+  el.classList.add(
+    'show'
+  );
+
+  clearTimeout(
+    toast._t
+  );
+
+  toast._t=
+    setTimeout(
+      ()=>
+        el.classList.remove('show'),
+      2800
+    );
+}
+
+
+function err(e){
+  const msg=
+    e&&e.message
+      ?e.message
+      :String(e);
+
+  toast(
+    msg.replace(
+      /^Exception:\s*/,
+      ''
+    ),
+    true
+  );
+}
+
+
+/* =========================================================
+   GO
+   ========================================================= */
+
+start();
+/* ========================================================= PRESEASON / ROUND PICKER FOR ADMIN Paste this block near the bottom of Scripts.html, directly above: start(); ========================================================= */ if(!window.__adminRoundPickerInstalled){ window.__adminRoundPickerInstalled=true; const __renderAdminWithoutRoundPicker=renderAdmin; renderAdmin=function renderAdminWithRoundPicker(){ __renderAdminWithoutRoundPicker(); injectAdminRoundPicker_(); }; } function injectAdminRoundPicker_(){ const cards=Array.from( document.querySelectorAll('#pageAdmin .admin-card') ); const card= cards.find( el=> String(el.textContent||'') .indexOf('Schedule & Scores')!==-1 )|| document.querySelector('#pageAdmin .admin-card-featured'); if(!card||document.getElementById('adminStagePicker')){ return; } const current= card.querySelector('.admin-current-round'); if(!current){ return; } const stages= S.data?.stages||[]; if(!stages.length){ return; } const options= stages .map(s=>`${esc(s.name)}`) .join(''); const picker=document.createElement('div'); picker.className='admin-field admin-stage-picker'; picker.style.marginTop='14px'; picker.innerHTML=` Choose Round 
+ `; current.insertAdjacentElement( 'afterend', picker ); } async function adminSelectRound(key){ key=String(key||'').trim(); if(!key||key===S.stageKey){ return; } await jumpStage(key); } async function adminRefreshAll(){ await busyAction( 'Refreshing regular season...', async()=>{ try{ const x= await API.refreshAll( S.token ); await reloadState(); toast( x.imported+ ' regular-season games imported / updated' ); }catch(e){ err(e); } } ); }
+
+</script>
